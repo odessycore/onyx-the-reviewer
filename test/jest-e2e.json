@@ -1,0 +1,15 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "maxWorkers": 1,
+  "testRegex": ".e2e-spec.ts$",
+  "transform": {
+    "^.+\\.ts$": ["ts-jest", {}]
+  },
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/../src/$1",
+    "^@octokit/rest$": "<rootDir>/octokit-stub.ts",
+    "^@octokit/auth-app$": "<rootDir>/octokit-stub.ts"
+  }
+}

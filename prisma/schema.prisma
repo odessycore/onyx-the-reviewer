@@ -1,0 +1,174 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+// A GitHub App installation on an account (user or org). Holds the per-installation
+// LLM/embedding overrides; API keys are stored encrypted at rest.
+model Installation {
+  id                    String   @id @default(cuid())
+  githubInstallationId  BigInt   @unique
+  accountLogin          String
+  accountType           String
+  llmProvider           String?
+  llmModel              String?
+  llmApiKeyEncrypted    String?
+  embeddingBaseUrl      String?
+  embeddingModel        String?
+  embeddingApiKeyEncrypted String?
+  enabled               Boolean  @default(true)
+  suspendedAt           DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  repositories Repository[]
+}
+
+model Repository {
+  id             String   @id @default(cuid())
+  installation   Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  installationId String
+  githubRepoId   BigInt   @unique
+  owner          String
+  name           String
+  fullName       String
+  defaultBranch  String   @default("main")
+  isPrivate      Boolean  @default(true)
+  enabled        Boolean  @default(true)
+  indexStatus    String   @default("pending") // pending | indexing | ready | failed
+  indexedSha     String?
+  indexedAt      DateTime?
+  profile        Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  pullRequests PullRequest[]
+  chunks       CodeChunk[]
+
+  @@index([installationId])
+}
+
+model PullRequest {
+  id           String   @id @default(cuid())
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repositoryId String
+  number       Int
+  githubPrId   BigInt?
+  title        String
+  body         String?
+  state        String   @default("open")
+  headSha      String
+  baseSha      String?
+  intent       Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  reviews       Review[]
+  conversations ConversationThread[]
+
+  @@unique([repositoryId, number])
+}
+
+// A conversation channel attached to a PR: either the PR conversation ('issue') or one
+// inline review thread ('review', anchored at the root review comment id). Deleted with the PR.
+model ConversationThread {
+  id            String   @id @default(cuid())
+  pullRequest   PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  pullRequestId String
+  channel       String // issue | review
+  anchorId      String // review root comment id, or 'pr' for the PR conversation
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  messages ConversationMessage[]
+
+  @@unique([pullRequestId, channel, anchorId])
+}
+
+model ConversationMessage {
+  id              String   @id @default(cuid())
+  thread          ConversationThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  threadId        String
+  role            String // user | assistant
+  authorLogin     String
+  githubCommentId BigInt?
+  body            String
+  createdAt       DateTime @default(now())
+
+  @@index([threadId])
+}
+
+model Review {
+  id            String   @id @default(cuid())
+  pullRequest   PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  pullRequestId String
+  jobId         String?
+  headSha       String
+  status        String   @default("pending") // pending | completed | failed
+  provider      String?
+  model         String?
+  summary       String?
+  findings      Json?
+  githubReviewId BigInt?
+  tokensInput   Int?
+  tokensOutput  Int?
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([pullRequestId])
+}
+
+// The async work queue. Claimed with FOR UPDATE SKIP LOCKED; retried with
+// full-jitter exponential backoff until maxAttempts, then dead-lettered (failed).
+model Job {
+  id             String   @id @default(cuid())
+  type           String
+  payload        Json
+  status         String   @default("pending") // pending | running | completed | failed
+  attempts       Int      @default(0)
+  maxAttempts    Int      @default(5)
+  runAt          DateTime @default(now())
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastError      String?
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status, runAt])
+}
+
+// Records every processed webhook delivery so redeliveries are dropped (idempotency).
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  deliveryId String   @unique
+  event      String
+  action     String?
+  receivedAt DateTime @default(now())
+}
+
+// A chunk of repository source code with its embedding (pgvector). The `embedding`
+// column is managed via raw SQL since Prisma has no native vector type.
+model CodeChunk {
+  id           String   @id @default(cuid())
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repositoryId String
+  filePath     String
+  startLine    Int
+  endLine      Int
+  content      String
+  blobSha      String
+  // Dimension must match EMBEDDING_DIMENSIONS / the embedding model (bge-small-en-v1.5 = 384).
+  embedding    Unsupported("vector(384)")?
+  createdAt    DateTime @default(now())
+
+  @@index([repositoryId])
+  @@index([repositoryId, filePath])
+}
